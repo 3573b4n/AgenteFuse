@@ -44,7 +44,7 @@ def _init_agent():
     """Inicializa el LLM y carga memoria previa."""
     global _llm_instance, _historial
 
-    # .env tiene prioridad sobre variables de entorno
+    # Leer .env para obtener la API key del proveedor actual
     _vals = {}
     try:
         from dotenv import dotenv_values
@@ -52,22 +52,29 @@ def _init_agent():
         _vals = dotenv_values()
     except Exception:
         pass
+
+    # Proveedor FreeLLMAPI (default)
     api_key = (
-        _vals.get("GEMINI_API_KEY")
+        _vals.get("FREELLM_API_KEY")
+        or os.environ.get("FREELLM_API_KEY")
+        or _vals.get("ORCAROUTER_API_KEY")
+        or os.environ.get("ORCAROUTER_API_KEY")
+        or _vals.get("GEMINI_API_KEY")
         or _vals.get("GOOGLE_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GOOGLE_API_KEY")
     )
     if not api_key:
-        raise RuntimeError("Falta GEMINI_API_KEY o GOOGLE_API_KEY")
+        raise RuntimeError(
+            "Falta FREELLM_API_KEY (o ORCAROUTER_API_KEY, o GEMINI_API_KEY/GOOGLE_API_KEY)"
+        )
 
     _llm_instance = LLM(
-        proveedor="gemini",
-        api_key=api_key,
-        model="gemini-3.8-flash",
+        proveedor="freellm",
+        model=os.environ.get("FREELLM_MODEL", "auto:smart"),
         max_retries=1,
         base_delay=1.0,
-        timeout_secs=float(os.environ.get("LLM_TIMEOUT_SECS", "300")),
+        timeout_secs=float(os.environ.get("LLM_TIMEOUT_SECS", "60")),
     )
 
     # Cargar historial previo

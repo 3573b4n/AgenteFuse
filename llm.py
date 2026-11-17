@@ -322,6 +322,858 @@ class GeminiProvider:
 
 
 # ---------------------------------------------------------------------------
+# Proveedor OrcaRouter (API OpenAI compatible)
+# ---------------------------------------------------------------------------
+class OrcaRouterProvider:
+    """
+    Implementacion para OrcaRouter usando la API OpenAI compatible.
+    Convierte internamente entre el formato de Gemini y OpenAI.
+    """
+
+    def __init__(
+        self,
+        api_key: str = None,
+        model: str = "orcarouter/jeff",
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        timeout_secs: float = 60.0,
+    ):
+        self.api_key = api_key or os.environ.get("ORCAROUTER_API_KEY")
+        if not self.api_key:
+            raise LLMError("Falta ORCAROUTER_API_KEY en variables de entorno")
+
+        self.model = model
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.timeout_secs = timeout_secs
+
+        try:
+            import openai
+
+            self.openai = openai
+            self.client = openai.OpenAI(
+                api_key=self.api_key,
+                base_url="https://api.orcarouter.ai/v1",
+                timeout=timeout_secs,
+            )
+        except ImportError as e:
+            raise LLMError("Falta instalar openai: pip install openai") from e
+
+    def _convert_contents_to_messages(self, contents, system_instruction):
+        """Convierte lista de contenidos a mensajes de OpenAI.
+
+        Soporta tanto dicts (formato OrcaRouter) como objetos Content de Gemini.
+        """
+        messages = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+
+        for content in contents:
+            # Si ya es un dict (formato OrcaRouter), usarlo directamente
+            if isinstance(content, dict):
+                if "role" in content and "content" in content:
+                    messages.append(content)
+                elif "role" in content and "tool_calls" in content:
+                    messages.append(content)
+                continue
+
+            try:
+                role = content.role
+                parts = content.parts
+                if not parts:
+                    continue
+
+                for part in parts:
+                    # Texto normal
+                    if hasattr(part, "text") and part.text:
+                        messages.append({"role": role, "content": part.text})
+                    # Function call (tool call)
+                    elif hasattr(part, "function_call") and part.function_call:
+                        fc = part.function_call
+                        args_str = ""
+                        if fc.args:
+                            import json
+
+                            args_str = json.dumps(fc.args)
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": getattr(fc, "id", "call_0"),
+                                        "type": "function",
+                                        "function": {
+                                            "name": fc.name,
+                                            "arguments": args_str,
+                                        },
+                                    }
+                                ],
+                            }
+                        )
+                    # Function response
+                    elif hasattr(part, "function_response") and part.function_response:
+                        fr = part.function_response
+                        result = fr.response.get("result", "")
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": getattr(fr, "id", "call_0"),
+                                "name": fr.name,
+                                "content": result,
+                            }
+                        )
+            except Exception:
+                continue
+
+        return messages
+
+    def _build_openai_config(self, config):
+        """Construye config de OpenAI a partir de config de Gemini."""
+        tools = config.get("tools", [])
+        openai_tools = []
+        for tool_def in tools:
+            if isinstance(tool_def, dict) and "function_declarations" in tool_def:
+                for fn in tool_def["function_declarations"]:
+                    params = fn.get("parameters", {})
+                    openai_tools.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": fn["name"],
+                                "description": fn.get("description", ""),
+                                "parameters": params
+                                if params
+                                else {
+                                    "type": "object",
+                                    "properties": {},
+                                },
+                            },
+                        }
+                    )
+        return openai_tools if openai_tools else None
+
+    def generar(self, contents, config):
+        """Llama a OrcaRouter sin streaming."""
+        system_instr = config.get("system_instruction", "")
+        messages = self._convert_contents_to_messages(contents, system_instr)
+        openai_tools = self._build_openai_config(config)
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.7,
+        }
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+            kwargs["tool_choice"] = "auto"
+
+        last_exception = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = self.client.chat.completions.create(**kwargs)
+                return _OrcaRouterResponse(resp)
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    time.sleep(self.base_delay * attempt)
+
+        raise LLMError(
+            f"Error llamando a OrcaRouter despues de {self.max_retries} intentos: {last_exception}"
+        ) from last_exception
+
+    def generar_streaming(self, contents, config):
+        """Llama a OrcaRouter con streaming."""
+        system_instr = config.get("system_instruction", "")
+        messages = self._convert_contents_to_messages(contents, system_instr)
+        openai_tools = self._build_openai_config(config)
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.7,
+            "stream": True,
+        }
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+            kwargs["tool_choice"] = "auto"
+
+        last_exception = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                raw_stream = self.client.chat.completions.create(**kwargs)
+                return _OrcaRouterStreamingResponse(raw_stream)
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    time.sleep(self.base_delay * attempt)
+
+        raise LLMError(
+            f"Error llamando a OrcaRouter (streaming) despues de {self.max_retries} intentos: {last_exception}"
+        ) from last_exception
+
+    def extraer_texto(self, response) -> str:
+        """Extrae texto de respuesta de OrcaRouter."""
+        try:
+            choice = response._raw.choices[0]
+            if choice.message.content:
+                return choice.message.content
+            return ""
+        except (IndexError, AttributeError, TypeError):
+            return ""
+
+    def extraer_tool_calls(self, response) -> list:
+        """Extrae tool calls de respuesta de OrcaRouter."""
+        tool_calls = []
+        try:
+            choice = response._raw.choices[0]
+            for tc in choice.message.tool_calls or []:
+                import json
+
+                tool_calls.append(
+                    {
+                        "name": tc.function.name,
+                        "args": json.loads(tc.function.arguments)
+                        if tc.function.arguments
+                        else {},
+                        "raw_part": tc,
+                    }
+                )
+        except (IndexError, AttributeError, TypeError):
+            pass
+        return tool_calls
+
+    def tiene_tool_calls(self, response) -> bool:
+        """True si la respuesta tiene tool calls."""
+        try:
+            choice = response._raw.choices[0]
+            return bool(choice.message.tool_calls)
+        except (IndexError, AttributeError, TypeError):
+            return False
+
+    def extraer_contenido(self, response):
+        """Devuelve contenido crudo para historial (adaptado a formato Gemini)."""
+        try:
+            choice = response._raw.choices[0]
+            msg = choice.message
+            # Construir un objeto tipo Content de Gemini manualmente
+            import types
+
+            content_obj = types.SimpleNamespace()
+            content_obj.role = "model"
+            parts_list = []
+
+            if msg.content:
+                part = types.SimpleNamespace()
+                part.text = msg.content
+                parts_list.append(part)
+
+            for tc in msg.tool_calls or []:
+                part = types.SimpleNamespace()
+                part.function_call = types.SimpleNamespace(
+                    name=tc.function.name,
+                    args=json.loads(tc.function.arguments)
+                    if tc.function.arguments
+                    else {},
+                )
+                parts_list.append(part)
+
+            content_obj.parts = parts_list if parts_list else []
+            return content_obj
+        except Exception:
+            return None
+
+    def crear_mensaje_usuario(self, texto: str):
+        """Crea mensaje de usuario (formato interno OrcaRouter)."""
+        return {"role": "user", "content": texto}
+
+    def crear_mensaje_tool_response(self, tool_name: str, resultado: str):
+        """Crea mensaje de respuesta de herramienta."""
+        return {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": tool_name,
+            "content": resultado,
+        }
+
+    def crear_mensaje(self, role: str, texto: str):
+        """Crea mensaje genérico."""
+        return {"role": role, "content": texto}
+
+
+# Wrapper para respuesta no-streaming de OrcaRouter
+class _OrcaRouterResponse:
+    """Envuelve la respuesta de OpenAI para que sea compatible con el codigo existente."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    @property
+    def candidates(self):
+        return self._raw.choices
+
+    @property
+    def text(self):
+        try:
+            return self._raw.choices[0].message.content or ""
+        except (IndexError, AttributeError):
+            return ""
+
+
+# Wrapper para respuesta streaming de OrcaRouter
+class _OrcaRouterStreamingResponse:
+    """Envuelve el stream de OpenAI para que sea compatible con el codigo existente."""
+
+    def __init__(self, raw_stream):
+        self._raw_stream = raw_stream
+        self._chunks = []
+        self._raw = None
+
+    def __iter__(self):
+        self._chunks = []
+        for chunk in self._raw_stream:
+            self._chunks.append(chunk)
+            yield _OrcaRouterStreamChunk(chunk)
+
+    @property
+    def candidates(self):
+        # Construir respuesta completa del stream
+        full_text = ""
+        tool_calls = {}
+        for chunk in self._chunks:
+            c = chunk._raw
+            if hasattr(c, "choices") and c.choices:
+                delta = c.choices[0].delta
+                if hasattr(delta, "content") and delta.content:
+                    full_text += delta.content
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls:
+                            tool_calls[idx] = {
+                                "id": tc.id or "",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls[idx]["function"]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls[idx]["function"]["arguments"] += (
+                                    tc.function.arguments
+                                )
+
+        import types
+
+        content_obj = types.SimpleNamespace()
+        content_obj.role = "model"
+        parts_list = []
+
+        if full_text:
+            part = types.SimpleNamespace()
+            part.text = full_text
+            parts_list.append(part)
+
+        for tc in tool_calls.values():
+            import json
+
+            part = types.SimpleNamespace()
+            try:
+                args = (
+                    json.loads(tc["function"]["arguments"])
+                    if tc["function"]["arguments"]
+                    else {}
+                )
+            except json.JSONDecodeError:
+                args = {}
+            part.function_call = types.SimpleNamespace(
+                name=tc["function"]["name"],
+                args=args,
+            )
+            parts_list.append(part)
+
+        content_obj.parts = parts_list if parts_list else []
+
+        resp = _OrcaRouterResponse.__new__(_OrcaRouterResponse)
+        resp._raw = types.SimpleNamespace()
+        resp._raw.choices = [types.SimpleNamespace()]
+        resp._raw.choices[0].message = types.SimpleNamespace()
+        resp._raw.choices[0].message.content = full_text
+        resp._raw.choices[0].message.tool_calls = []
+        resp.candidates = resp._raw.choices
+        resp.content = content_obj
+        return resp.candidates
+
+
+class _OrcaRouterStreamChunk:
+    """Envuelve un chunk individual del stream.
+
+    Expone la misma interfaz que Gemini para que web_server.py pueda hacer:
+        chunk.candidates[0].content.parts
+    """
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    @property
+    def candidates(self):
+        try:
+            choices = self._raw.choices
+            if not choices:
+                return []
+            # Construir un objeto candidato con content.parts compatible con Gemini
+            import types
+
+            delta = choices[0].delta
+            content_obj = types.SimpleNamespace()
+            parts_list = []
+
+            # Texto del delta
+            if hasattr(delta, "content") and delta.content:
+                part = types.SimpleNamespace()
+                part.text = delta.content
+                parts_list.append(part)
+
+            # Tool calls del delta
+            if hasattr(delta, "tool_calls") and delta.tool_calls:
+                for tc in delta.tool_calls:
+                    part = types.SimpleNamespace()
+                    part.function_call = types.SimpleNamespace(
+                        name=tc.function.name if tc.function else "",
+                        arguments=(tc.function.arguments if tc.function else ""),
+                    )
+                    parts_list.append(part)
+
+            content_obj.parts = parts_list
+            candidate = types.SimpleNamespace()
+            candidate.content = content_obj
+            return [candidate]
+        except AttributeError:
+            return []
+
+
+# ---------------------------------------------------------------------------
+# Proveedor FreeLLMAPI (API OpenAI compatible local)
+# ---------------------------------------------------------------------------
+class FreeLLMAPIProvider:
+    """
+    Implementacion para FreeLLMAPI usando la API OpenAI compatible local.
+    Convierte internamente entre el formato de Gemini y OpenAI.
+    """
+
+    def __init__(
+        self,
+        api_key: str = None,
+        model: str = "auto:smart",
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        timeout_secs: float = 60.0,
+        base_url: str = "http://localhost:3001/v1",
+    ):
+        self.api_key = api_key or os.environ.get("FREELLM_API_KEY")
+        if not self.api_key:
+            raise LLMError("Falta FREELLM_API_KEY en variables de entorno")
+
+        self.model = model
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.timeout_secs = timeout_secs
+        self.base_url = base_url
+
+        try:
+            import openai
+
+            self.openai = openai
+            self.client = openai.OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=timeout_secs,
+            )
+        except ImportError as e:
+            raise LLMError("Falta instalar openai: pip install openai") from e
+
+    def _convert_contents_to_messages(self, contents, system_instruction):
+        """Convierte lista de contenidos a mensajes de OpenAI.
+
+        Soporta tanto dicts (formato FreeLLMAPI) como objetos Content de Gemini.
+        """
+        messages = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+
+        for item in contents:
+            if isinstance(item, dict):
+                # Formato dict (OpenAI)
+                if item.get("role") == "user":
+                    messages.append(
+                        {"role": "user", "content": item.get("content", "")}
+                    )
+                elif item.get("role") == "model":
+                    # Extraer texto de content.parts
+                    content = item.get("content", {})
+                    if hasattr(content, "parts"):
+                        text = ""
+                        for part in content.parts:
+                            if hasattr(part, "text") and part.text:
+                                text += part.text
+                        if text:
+                            messages.append({"role": "assistant", "content": text})
+                    elif hasattr(content, "text") and content.text:
+                        messages.append({"role": "assistant", "content": content.text})
+                elif item.get("role") == "tool":
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": item.get("tool_call_id", "call_0"),
+                            "name": item.get("name", "tool"),
+                            "content": item.get("content", ""),
+                        }
+                    )
+                else:
+                    messages.append(item)
+            else:
+                # Objeto Content de Gemini
+                if hasattr(item, "role") and item.role == "user":
+                    text = ""
+                    if hasattr(item, "content") and item.content:
+                        if hasattr(item.content, "parts"):
+                            for part in item.content.parts:
+                                if hasattr(part, "text") and part.text:
+                                    text += part.text
+                    if text:
+                        messages.append({"role": "user", "content": text})
+                elif hasattr(item, "role") and item.role == "model":
+                    text = ""
+                    if hasattr(item, "content") and item.content:
+                        if hasattr(item.content, "parts"):
+                            for part in item.content.parts:
+                                if hasattr(part, "text") and part.text:
+                                    text += part.text
+                    if text:
+                        messages.append({"role": "assistant", "content": text})
+
+        return messages
+
+    def _build_openai_config(self, config):
+        """Construye la lista de herramientas en formato OpenAI."""
+        tools_schema = config.get("tools", [])
+        if not tools_schema:
+            return None
+
+        openai_tools = []
+        for tool in tools_schema:
+            if "function_declarations" in tool:
+                for func in tool["function_declarations"]:
+                    openai_tools.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": func["name"],
+                                "description": func.get("description", ""),
+                                "parameters": func.get("parameters", {}),
+                            },
+                        }
+                    )
+        return openai_tools if openai_tools else None
+
+    def generar(self, contents, config):
+        """Llama a FreeLLMAPI sin streaming."""
+        system_instr = config.get("system_instruction", "")
+        messages = self._convert_contents_to_messages(contents, system_instr)
+        openai_tools = self._build_openai_config(config)
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.7,
+        }
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+            kwargs["tool_choice"] = "auto"
+
+        last_exception = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = self.client.chat.completions.create(**kwargs)
+                return _FreeLLMAPIResponse(resp)
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    time.sleep(self.base_delay * attempt)
+
+        raise LLMError(
+            f"Error llamando a FreeLLMAPI despues de {self.max_retries} intentos: {last_exception}"
+        ) from last_exception
+
+    def generar_streaming(self, contents, config):
+        """Llama a FreeLLMAPI con streaming."""
+        system_instr = config.get("system_instruction", "")
+        messages = self._convert_contents_to_messages(contents, system_instr)
+        openai_tools = self._build_openai_config(config)
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.7,
+            "stream": True,
+        }
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+            kwargs["tool_choice"] = "auto"
+
+        last_exception = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                raw_stream = self.client.chat.completions.create(**kwargs)
+                return _FreeLLMAPIStreamingResponse(raw_stream)
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    time.sleep(self.base_delay * attempt)
+
+        raise LLMError(
+            f"Error llamando a FreeLLMAPI (streaming) despues de {self.max_retries} intentos: {last_exception}"
+        ) from last_exception
+
+    def extraer_texto(self, response) -> str:
+        """Extrae texto de respuesta de FreeLLMAPI."""
+        try:
+            choice = response._raw.choices[0]
+            if choice.message.content:
+                return choice.message.content
+            return ""
+        except (IndexError, AttributeError, TypeError):
+            return ""
+
+    def extraer_tool_calls(self, response) -> list:
+        """Extrae tool calls de respuesta de FreeLLMAPI."""
+        tool_calls = []
+        try:
+            choice = response._raw.choices[0]
+            for tc in choice.message.tool_calls or []:
+                import json
+
+                tool_calls.append(
+                    {
+                        "name": tc.function.name,
+                        "args": json.loads(tc.function.arguments)
+                        if tc.function.arguments
+                        else {},
+                        "raw_part": tc,
+                    }
+                )
+        except (IndexError, AttributeError, TypeError):
+            pass
+        return tool_calls
+
+    def tiene_tool_calls(self, response) -> bool:
+        """True si la respuesta tiene tool calls."""
+        try:
+            choice = response._raw.choices[0]
+            return bool(choice.message.tool_calls)
+        except (IndexError, AttributeError, TypeError):
+            return False
+
+    def extraer_contenido(self, response):
+        """Devuelve contenido crudo para historial (adaptado a formato Gemini)."""
+        try:
+            choice = response._raw.choices[0]
+            msg = choice.message
+            # Construir un objeto tipo Content de Gemini manualmente
+            import types
+
+            content_obj = types.SimpleNamespace()
+            content_obj.role = "model"
+            parts_list = []
+
+            if msg.content:
+                part = types.SimpleNamespace()
+                part.text = msg.content
+                parts_list.append(part)
+
+            for tc in msg.tool_calls or []:
+                part = types.SimpleNamespace()
+                part.function_call = types.SimpleNamespace(
+                    name=tc.function.name,
+                    args=json.loads(tc.function.arguments)
+                    if tc.function.arguments
+                    else {},
+                )
+                parts_list.append(part)
+
+            content_obj.parts = parts_list if parts_list else []
+            return content_obj
+        except Exception:
+            return None
+
+    def crear_mensaje_usuario(self, texto: str):
+        """Crea mensaje de usuario (formato interno FreeLLMAPI)."""
+        return {"role": "user", "content": texto}
+
+    def crear_mensaje_tool_response(self, tool_name: str, resultado: str):
+        """Crea mensaje de respuesta de herramienta."""
+        return {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": tool_name,
+            "content": resultado,
+        }
+
+    def crear_mensaje(self, role: str, texto: str):
+        """Crea mensaje genérico."""
+        return {"role": role, "content": texto}
+
+
+# Wrapper para respuesta no-streaming de FreeLLMAPI
+class _FreeLLMAPIResponse:
+    """Envuelve la respuesta de OpenAI para que sea compatible con el codigo existente."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    @property
+    def candidates(self):
+        return self._raw.choices
+
+    @property
+    def text(self):
+        try:
+            return self._raw.choices[0].message.content or ""
+        except (IndexError, AttributeError):
+            return ""
+
+
+# Wrapper para respuesta streaming de FreeLLMAPI
+class _FreeLLMAPIStreamingResponse:
+    """Envuelve el stream de OpenAI para que sea compatible con el codigo existente."""
+
+    def __init__(self, raw_stream):
+        self._raw_stream = raw_stream
+        self._chunks = []
+        self._raw = None
+
+    def __iter__(self):
+        self._chunks = []
+        for chunk in self._raw_stream:
+            self._chunks.append(chunk)
+            yield _FreeLLMAPIStreamChunk(chunk)
+
+    @property
+    def candidates(self):
+        # Construir respuesta completa del stream
+        full_text = ""
+        tool_calls = {}
+        for chunk in self._chunks:
+            c = chunk._raw
+            if hasattr(c, "choices") and c.choices:
+                delta = c.choices[0].delta
+                if hasattr(delta, "content") and delta.content:
+                    full_text += delta.content
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls:
+                            tool_calls[idx] = {
+                                "id": tc.id or "",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls[idx]["function"]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls[idx]["function"]["arguments"] += (
+                                    tc.function.arguments
+                                )
+
+        import types
+
+        content_obj = types.SimpleNamespace()
+        content_obj.role = "model"
+        parts_list = []
+
+        if full_text:
+            part = types.SimpleNamespace()
+            part.text = full_text
+            parts_list.append(part)
+
+        for tc in tool_calls.values():
+            import json
+
+            part = types.SimpleNamespace()
+            try:
+                args = (
+                    json.loads(tc["function"]["arguments"])
+                    if tc["function"]["arguments"]
+                    else {}
+                )
+            except json.JSONDecodeError:
+                args = {}
+            part.function_call = types.SimpleNamespace(
+                name=tc["function"]["name"],
+                args=args,
+            )
+            parts_list.append(part)
+
+        content_obj.parts = parts_list if parts_list else []
+
+        resp = _FreeLLMAPIResponse.__new__(_FreeLLMAPIResponse)
+        resp._raw = types.SimpleNamespace()
+        resp._raw.choices = [types.SimpleNamespace()]
+        resp._raw.choices[0].message = types.SimpleNamespace()
+        resp._raw.choices[0].message.content = full_text
+        resp._raw.choices[0].message.tool_calls = []
+        resp.candidates = resp._raw.choices
+        resp.content = content_obj
+        return resp.candidates
+
+
+class _FreeLLMAPIStreamChunk:
+    """Envuelve un chunk individual del stream.
+
+    Expone la misma interfaz que Gemini para que web_server.py pueda hacer:
+        chunk.candidates[0].content.parts
+    """
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    @property
+    def candidates(self):
+        try:
+            choices = self._raw.choices
+            if not choices:
+                return []
+            # Construir un objeto candidato con content.parts compatible con Gemini
+            import types
+
+            delta = choices[0].delta
+            content_obj = types.SimpleNamespace()
+            parts_list = []
+
+            # Texto del delta
+            if hasattr(delta, "content") and delta.content:
+                part = types.SimpleNamespace()
+                part.text = delta.content
+                parts_list.append(part)
+
+            # Tool calls del delta
+            if hasattr(delta, "tool_calls") and delta.tool_calls:
+                for tc in delta.tool_calls:
+                    part = types.SimpleNamespace()
+                    part.function_call = types.SimpleNamespace(
+                        name=tc.function.name if tc.function else "",
+                        arguments=(tc.function.arguments if tc.function else ""),
+                    )
+                    parts_list.append(part)
+
+            content_obj.parts = parts_list
+            candidate = types.SimpleNamespace()
+            candidate.content = content_obj
+            return [candidate]
+        except AttributeError:
+            return []
+
+
+# ---------------------------------------------------------------------------
 # Factory: seleccionar el proveedor segun el nombre
 # ---------------------------------------------------------------------------
 class LLM:
@@ -353,13 +1205,24 @@ class LLM:
                 timeout_secs=timeout_secs,
                 **kwargs,
             )
-        # Cuando implementemos otros:
-        # elif proveedor == "claude":
-        #     self._impl = ClaudeProvider(**kwargs)
-        # elif proveedor == "openai":
-        #     self._impl = OpenAIProvider(**kwargs)
+        elif proveedor == "orcarouter":
+            self._impl = OrcaRouterProvider(
+                max_retries=max_retries,
+                base_delay=base_delay,
+                timeout_secs=timeout_secs,
+                **kwargs,
+            )
+        elif proveedor == "freellm":
+            self._impl = FreeLLMAPIProvider(
+                max_retries=max_retries,
+                base_delay=base_delay,
+                timeout_secs=timeout_secs,
+                **kwargs,
+            )
         else:
-            raise LLMError(f"Proveedor '{proveedor}' no soportado. Disponibles: gemini")
+            raise LLMError(
+                f"Proveedor '{proveedor}' no soportado. Disponibles: gemini, orcarouter, freellm"
+            )
 
     # Passthrough a la implementacion
     def generar(self, contents, config):
