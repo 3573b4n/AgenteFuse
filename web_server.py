@@ -119,76 +119,23 @@ def _ejecutar_chat(prompt: str) -> str:
         while iteraciones < MAX_ITER:
             iteraciones += 1
             try:
-                stream = _llm_instance.generar_streaming(
+                # Usar no-streaming para evitar problemas con streaming de FreeLLMAPI
+                response = _llm_instance.generar(
                     contents=_historial, config=AGENTE_CONFIG
                 )
             except LLMError as e:
                 logger.error(f"Error API: {e}")
                 return f"[ERROR API] {e}"
 
-            texto_completo = ""
-            tiene_tool_calls = False
-
-            try:
-                for chunk in stream:
-                    try:
-                        parts = chunk.candidates[0].content.parts
-                        if parts:
-                            for part in parts:
-                                if (
-                                    hasattr(part, "function_call")
-                                    and part.function_call
-                                ):
-                                    tiene_tool_calls = True
-                    except (IndexError, AttributeError, TypeError):
-                        pass
-
-                    try:
-                        partes = chunk.candidates[0].content.parts
-                        if partes:
-                            for parte in partes:
-                                if hasattr(parte, "text") and parte.text:
-                                    texto_completo += parte.text
-                    except (IndexError, AttributeError, TypeError):
-                        pass
-            except Exception as e:
-                # Errores durante streaming (503, timeouts, etc.)
-                error_msg = str(e)
-                if "503" in error_msg or "UNAVAILABLE" in error_msg:
-                    return "[aviso] Gemini está con alta demanda temporal. Probá de nuevo en unos minutos."
-                elif "402" in error_msg or "credits" in error_msg.lower():
-                    return "[error] Créditos agotados. Verificá tu cuenta en Google AI Studio."
-                elif "404" in error_msg or "NOT_FOUND" in error_msg:
-                    return "[error] Modelo no disponible. Contactá al administrador."
-                else:
-                    logger.error(f"Error en streaming: {e}")
-                    return f"[error] Error inesperado: {error_msg[:200]}"
+            texto_completo = _llm_instance.extraer_texto(response)
+            tiene_tool_calls = _llm_instance.tiene_tool_calls(response)
 
             if tiene_tool_calls:
-                contenido = None
-                try:
-                    contenido = stream.candidates[0].content
-                except (IndexError, AttributeError):
-                    pass
+                contenido = _llm_instance.extraer_contenido(response)
                 if contenido:
                     _historial.append(contenido)
 
-                tool_calls = []
-                try:
-                    parts = stream.candidates[0].content.parts
-                    if parts:
-                        for part in parts:
-                            if hasattr(part, "function_call") and part.function_call:
-                                tool_calls.append(
-                                    {
-                                        "name": part.function_call.name,
-                                        "args": dict(part.function_call.args)
-                                        if part.function_call.args
-                                        else {},
-                                    }
-                                )
-                except (IndexError, AttributeError, TypeError):
-                    pass
+                tool_calls = _llm_instance.extraer_tool_calls(response)
 
                 try:
                     for tc in tool_calls:
@@ -202,7 +149,7 @@ def _ejecutar_chat(prompt: str) -> str:
                     logger.error(f"Error ejecutando herramienta: {e}")
                     texto_completo = f"[error ejecutando herramienta] {e}"
 
-            elif texto_completo:
+            if texto_completo:
                 respuesta_final = texto_completo.strip()
                 break
 
