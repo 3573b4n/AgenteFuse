@@ -233,64 +233,453 @@ class AgenteHandler(BaseHTTPRequestHandler):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agente 3573b4n</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-tertiary: #1a1a25;
+  --bg-card: #16161f;
+  --border: #2a2a3a;
+  --border-light: #3a3a4a;
+  --text-primary: #e8e8f0;
+  --text-secondary: #a0a0b8;
+  --text-muted: #6a6a80;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-glow: rgba(99, 102, 241, 0.15);
+  --user-bg: #1e1e2e;
+  --agent-bg: #1a1a28;
+  --error: #ef4444;
+  --success: #22c55e;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; height: 100vh; display: flex; flex-direction: column; }
-#chat { flex: 1; overflow-y: auto; padding: 20px; }
-.msg { margin-bottom: 16px; max-width: 80%; padding: 12px 16px; border-radius: 12px; line-height: 1.5; white-space: pre-wrap; }
-.msg.user { background: #16213e; align-self: flex-end; margin-left: auto; }
-.msg.agent { background: #0f3460; align-self: flex-start; }
-#input-area { display: flex; padding: 16px; gap: 8px; background: #16213e; }
-#input-area input { flex: 1; padding: 12px; border: none; border-radius: 8px; background: #1a1a2e; color: #eee; font-size: 16px; }
-#input-area button { padding: 12px 24px; border: none; border-radius: 8px; background: #e94560; color: white; font-size: 16px; cursor: pointer; }
-#input-area button:hover { background: #c73652; }
-.loading { opacity: 0.5; font-style: italic; }
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-image: 
+    radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.05) 0%, transparent 50%),
+    radial-gradient(ellipse at bottom right, rgba(139, 92, 246, 0.03) 0%, transparent 50%);
+}
+
+/* Header */
+.header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-secondary);
+  backdrop-filter: blur(12px);
+}
+
+.header-logo {
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: white;
+}
+
+.header-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.header-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Chat area */
+#chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+}
+
+#chat::-webkit-scrollbar { width: 6px; }
+#chat::-webkit-scrollbar-track { background: transparent; }
+#chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Messages */
+.msg {
+  max-width: 75%;
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 14px;
+  animation: fadeIn 0.3s ease-out;
+  position: relative;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.msg.user {
+  background: var(--user-bg);
+  align-self: flex-end;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-bottom-right-radius: 4px;
+}
+
+.msg.agent {
+  background: var(--agent-bg);
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+.msg.error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--error);
+}
+
+.msg .role-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.msg .role-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.msg.user .role-badge::before {
+  background: var(--accent-hover);
+}
+
+/* Loading indicator */
+.loading {
+  opacity: 0.7;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.loading::after {
+  content: '';
+  animation: dots 1.5s infinite;
+}
+
+@keyframes dots {
+  0%, 20% { content: '.'; }
+  40% { content: '..'; }
+  60%, 100% { content: '...'; }
+}
+
+/* Input area */
+#input-area {
+  padding: 16px 24px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.input-wrapper {
+  flex: 1;
+  position: relative;
+}
+
+#user-input {
+  width: 100%;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: 'Inter', sans-serif;
+  resize: none;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  min-height: 48px;
+  max-height: 200px;
+}
+
+#user-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+#user-input::placeholder {
+  color: var(--text-muted);
+}
+
+#send-btn {
+  padding: 14px 24px;
+  border: none;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: 'Inter', sans-serif;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+#send-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+
+#send-btn:active {
+  transform: translateY(0);
+}
+
+#send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+#send-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Welcome screen */
+.welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px;
+  gap: 16px;
+}
+
+.welcome-icon {
+  width: 64px;
+  height: 64px;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  margin-bottom: 8px;
+  box-shadow: 0 8px 32px var(--accent-glow);
+}
+
+.welcome h1 {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.welcome p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  max-width: 400px;
+  line-height: 1.6;
+}
+
+.welcome-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: center;
+}
+
+.suggestion {
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.suggestion:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .msg { max-width: 90%; }
+  .header { padding: 12px 16px; }
+  #chat { padding: 16px; }
+  #input-area { padding: 12px 16px; }
+}
 </style>
 </head>
 <body>
-<div id="chat"></div>
-<div id="input-area">
-<input type="text" id="user-input" placeholder="Escribí tu mensaje..." autofocus>
-<button onclick="enviar()">Enviar</button>
+<div class="header">
+  <div class="header-logo">A</div>
+  <div class="header-title">Agente 3573b4n</div>
+  <div class="header-subtitle">FreeLLMAPI · auto:smart</div>
 </div>
+
+<div id="chat">
+  <div class="welcome" id="welcome">
+    <div class="welcome-icon">🤖</div>
+    <h1>Bienvenido al Agente</h1>
+    <p>Asistente inteligente con acceso a herramientas de Git, búsqueda de archivos y más. Powered by FreeLLMAPI con 4 proveedores gratuitos.</p>
+    <div class="welcome-suggestions">
+      <div class="suggestion" onclick="usarSugerencia('¿Qué herramientas tienes disponibles?')">🔧 Ver herramientas</div>
+      <div class="suggestion" onclick="usarSugerencia('Explícame cómo funciona este agente')">📖 Cómo funciona</div>
+      <div class="suggestion" onclick="usarSugerencia('Hazme un favor pequeño')">✨ Ayúdame</div>
+    </div>
+  </div>
+</div>
+
+<div id="input-area">
+  <div class="input-wrapper">
+    <textarea id="user-input" placeholder="Escribí tu mensaje..." autofocus rows="1"></textarea>
+  </div>
+  <button id="send-btn" onclick="enviar()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+    </svg>
+    Enviar
+  </button>
+</div>
+
 <script>
 const chat = document.getElementById('chat');
 const input = document.getElementById('user-input');
+const sendBtn = document.getElementById('send-btn');
+const welcome = document.getElementById('welcome');
+
+// Auto-resize textarea
+input.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+});
+
+// Enter para enviar, Shift+Enter para nueva línea
+input.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    enviar();
+  }
+});
+
+function usarSugerencia(texto) {
+  input.value = texto;
+  input.focus();
+  enviar();
+}
 
 function addMsg(role, text) {
-    const div = document.createElement('div');
-    div.className = 'msg ' + role;
-    div.textContent = text;
-    chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+  if (welcome) welcome.remove();
+  
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  
+  const badge = document.createElement('div');
+  badge.className = 'role-badge';
+  badge.textContent = role === 'user' ? 'Tú' : 'Agente';
+  div.appendChild(badge);
+  
+  const content = document.createElement('div');
+  content.textContent = text;
+  div.appendChild(content);
+  
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
 }
 
 async function enviar() {
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-    addMsg('user', text);
-    const loading = document.createElement('div');
-    loading.className = 'msg agent loading';
-    loading.textContent = 'Pensando...';
-    chat.appendChild(loading);
-    try {
-        const res = await fetch('/chat', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({prompt: text})
-        });
-        const data = await res.json();
-        loading.remove();
-        if (data.response) addMsg('agent', data.response);
-        else if (data.error) addMsg('agent', '[ERROR] ' + data.error);
-    } catch(e) {
-        loading.remove();
-        addMsg('agent', '[ERROR] No se pudo conectar al servidor');
+  const text = input.value.trim();
+  if (!text) return;
+  
+  input.value = '';
+  input.style.height = 'auto';
+  sendBtn.disabled = true;
+  
+  addMsg('user', text);
+  
+  const loading = document.createElement('div');
+  loading.className = 'msg agent loading';
+  const badge = document.createElement('div');
+  badge.className = 'role-badge';
+  badge.textContent = 'Agente';
+  loading.appendChild(badge);
+  const content = document.createElement('div');
+  content.textContent = 'Pensando';
+  loading.appendChild(content);
+  chat.appendChild(loading);
+  chat.scrollTop = chat.scrollHeight;
+  
+  try {
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt: text})
+    });
+    const data = await res.json();
+    loading.remove();
+    
+    if (data.response) {
+      addMsg('agent', data.response);
+    } else if (data.error) {
+      addMsg('error', data.error);
     }
+  } catch(e) {
+    loading.remove();
+    addMsg('error', 'No se pudo conectar al servidor');
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
 }
 
-input.addEventListener('keydown', e => { if (e.key === 'Enter') enviar(); });
+input.focus();
 </script>
 </body>
 </html>"""
