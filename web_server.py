@@ -232,7 +232,7 @@ class AgenteHandler(BaseHTTPRequestHandler):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agente 3573b4n</title>
+<title>Agente Fuse</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -560,14 +560,14 @@ body {
 <body>
 <div class="header">
   <div class="header-logo">A</div>
-  <div class="header-title">Agente 3573b4n</div>
+  <div class="header-title">Agente Fuse</div>
   <div class="header-subtitle">FreeLLMAPI · auto:smart</div>
 </div>
 
 <div id="chat">
   <div class="welcome" id="welcome">
     <div class="welcome-icon">🤖</div>
-    <h1>Bienvenido al Agente</h1>
+    <h1>Bienvenido a Agente Fuse</h1>
     <p>Asistente inteligente con acceso a herramientas de Git, búsqueda de archivos y más. Powered by FreeLLMAPI con 4 proveedores gratuitos.</p>
     <div class="welcome-suggestions">
       <div class="suggestion" onclick="usarSugerencia('¿Qué herramientas tienes disponibles?')">🔧 Ver herramientas</div>
